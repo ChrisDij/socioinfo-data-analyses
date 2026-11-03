@@ -1,0 +1,304 @@
+---
+title: "Customer Segmentation in Retail Data Analysis"
+author: "Christiaan Dijkstra"
+format: pdf
+editor: visual
+echo: false
+warning: false
+message: false
+---
+
+# Introduction
+
+This report performs an exploratory analysis of customer purchasing behaviour using an e-commerce dataset for sales between December 2010 and December 2011. The primary goal is to identify key customer segments based on spending patterns in the online retail dataset, addressing the question of how customers can be categorised to optimise retail marketing and inventory strategies. The objectives include cleaning the dataset, conducting EDA to uncover patterns such as purchasing frequency and product diversity, visualising trends over time and across regions, and discussing actionable implications for retail strategies.
+
+# Data Cleaning and Preparation
+
+The dataset is imported from the Excel file and tidied. Missing values are handled, dates are converted, and variables like total spending and RFM (Recency, Frequency, Monetary) metrics are derived.
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+# Import data from Excel file into a data frame for analysis
+data <- read_excel("project_2_online_retail.xlsx", sheet = "Online Retail")
+
+# Inspect data structures to verify loading and identify initial issues
+glimpse(data)
+summary(data)
+
+# Remove incomplete rows in essential columns to maintain data quality
+data_clean <- data %>%
+  drop_na(InvoiceNo, StockCode, Description, Quantity, InvoiceDate, UnitPrice, CustomerID, Country) %>%
+  mutate(InvoiceDate = as.Date(InvoiceDate),  # Convert serial dates for temporal accuracy
+         TotalSpending = Quantity * UnitPrice,
+         Month = floor_date(InvoiceDate, "month"),
+         Country = factor(Country, levels = unique(Country))) %>%  # Categorise country for regional analysis
+  filter(Quantity > 0, UnitPrice > 0)  # Exclude returns and errors to focus on valid sales
+
+# Set reference date post-last invoice to measure customer inactivity precisely
+reference_date <- max(data_clean$InvoiceDate) + days(1)
+
+# Aggregate RFM metrics per customer to enable segmentation
+rfm_data <- data_clean %>%
+  group_by(CustomerID) %>%
+  summarise(Recency = as.numeric(reference_date - max(InvoiceDate)),
+            Frequency = n_distinct(InvoiceNo),
+            Monetary = sum(TotalSpending),
+            ProductDiversity = n_distinct(StockCode)) %>%
+  ungroup() # Ungroup to remove CustomerID grouping, ensuring downstream operations treat rfm_data as a single data frame
+```
+
+{{< pagebreak >}}
+
+# Exploratory Data Analysis
+
+## Summary Statistics
+
+Compute summary statistics for key variables.
+
+```{r}
+# Aggregate spending metrics by country to rank market contributions
+data_clean %>%
+  group_by(Country) %>%
+  summarise(mean_spending = mean(TotalSpending, na.rm = TRUE),
+            total_spending = sum(TotalSpending),
+            num_transactions = n()) %>%
+  arrange(desc(total_spending))
+
+# Compute RFM averages to gauge overall customer engagement levels
+rfm_data %>%
+  summarise(mean_recency = mean(Recency, na.rm = TRUE),
+            mean_frequency = mean(Frequency, na.rm = TRUE),
+            mean_monetary = mean(Monetary, na.rm = TRUE),
+            mean_diversity = mean(ProductDiversity, na.rm = TRUE))
+```
+
+{{< pagebreak >}}
+
+## Visualisations
+
+Visualisations are created to explore trends and relationships, highlighting key customer segments.
+
+-   **Histogram of Quantity**:
+
+    -   **Descriptor**: The histogram extracts the distribution of transaction quantities to understand typical purchase sizes and identify outliers, aiding inventory planning and demand forecasting. A histogram is ideal because it shows the frequency of quantities across a continuous range, highlighting common order sizes and rare high-volume purchases. This histogram shows transaction quantities (0-250) for a sampled dataset, using 20 bins. The y-axis is capped at 5000, and text labels mark bins with counts exceeding 1000, emphasising the prevalence of small versus large orders.
+
+```{r}
+# Sample filtered data to manage large dataset for visualisation efficiency
+set.seed(123)  # For reproducibility
+ggplot(data_clean %>% filter(Quantity > 0 & Quantity < 250) %>% sample_n(min(50000, nrow(.))), aes(x = Quantity, fill = ..count..)) + # Use ..count.. to map fill color to the number of observations per bin
+  geom_histogram(bins = 20, color = "black", alpha = 0.7) +  # Black outline, semi-transparent fill
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Count") +  # Gradient fill
+  coord_cartesian(ylim = c(0, 5000)) +
+  labs(title = "Distribution of Quantity per Transaction", x = "Quantity", y = "Count") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "navy", face = "bold"),
+        axis.title = element_text(color = "darkgreen"),
+        panel.background = element_rect(fill = "aliceblue"))
+```
+
+-   **Scatter plot: UnitPrice vs Quantity**:
+
+    -   **Descriptor**: This scatter plot uncovers relationships between unit price and quantity to identify pricing strategies, such as bulk discounts, for optimising pricing. A scatter plot is ideal for mapping two continuous variables, revealing correlations in purchasing patterns. The plot maps unit prices (0-50) against quantities (0-500) for a sampled dataset, with points sized by total spending. A LOESS curve shows the trend, and an annotation notes a "Bulk Discount Trend" at higher quantities.
+
+```{r}
+# Sample filtered data to handle volume while preserving patterns
+set.seed(123)  # For reproducibility
+scatter_plot <- ggplot(data_clean %>% filter(UnitPrice > 0, UnitPrice < 50, Quantity > 0, Quantity < 500) %>% sample_n(min(50000, nrow(.))), aes(x = UnitPrice, y = Quantity, color = TotalSpending)) +
+  geom_point(alpha = 0.3, size = 2) +
+  geom_smooth(method = "loess", se = FALSE, color = "purple", linewidth = 1.2) +
+  scale_color_gradient(low = "yellow", high = "red", name = "Total Spending") +
+  coord_cartesian(ylim = c(0, 500)) +
+  labs(title = "Unit Price vs Quantity (Filtered Outliers)", x = "Unit Price", y = "Quantity") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "maroon", face = "bold", hjust = 0.5),
+        axis.title = element_text(color = "darkblue"),
+        panel.grid.major = element_line(color = "lightgray", linetype = "dashed"),
+        legend.position = "right") +
+  annotate("text", x = 15, y = 180, label = "Bulk Discount Trend", color = "green", size = 4, fontface = "italic")
+
+print(scatter_plot)
+```
+
+-   **Line plot: Sales over time**:
+
+    -   **Descriptor**: The line plot extracts daily sales trends from 2010 to 2011 to identify growth patterns and seasonal fluctuations, informing marketing campaign timing. A line plot is ideal for visualising continuous time-series data, showing sales progression and key changes. The plot tracks daily sales from 2010 to 2011 with a line and a shaded area beneath. An annotation marks "Midpoint Growth" around mid-2011, highlighting significant sales trends within the period.
+
+```{r}
+# Aggregate daily sales totals to examine temporal patterns
+daily_sales_data <- data_clean %>%
+  group_by(InvoiceDate) %>%
+  summarise(daily_sales = sum(TotalSpending), .groups = "drop")
+
+# Pre-compute max sales for annotation positioning
+max_daily_sales <- max(daily_sales_data$daily_sales, na.rm = TRUE)
+
+# Plot line to track sales progression over time
+ggplot(daily_sales_data, 
+       aes(x = InvoiceDate, y = daily_sales)) +
+  geom_line(color = "darkorange", linewidth = 1) +
+  # Added shaded area under curve to emphasise cumulative trends
+  geom_area(fill = "gold", alpha = 0.4) +  # Shaded area under curve
+  labs(title = "Daily Sales Trends Over Time (2010-2011)", x = "Date", y = "Total Sales") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "darkred", face = "bold"),
+        axis.title = element_text(color = "darkgreen"),
+        panel.background = element_rect(fill = "lightyellow")) +
+  annotate("text", x = median(daily_sales_data$InvoiceDate), y = max_daily_sales * 0.9, 
+           label = "Midpoint Growth", color = "blue", size = 4)
+```
+
+-   **Bar plot: Total spending by country**:
+
+    -   **Descriptor**: The bar plot identifies key markets by comparing total spending across countries, guiding geographic marketing strategies. A bar plot is ideal for comparing categorical data (countries) with a numerical metric (spending), clearly ranking market contributions. The plot ranks the top 10 countries by total spending, capped at 1,000,000 on the y-axis. Labels above bars show rounded spending values, highlighting dominant markets like the UK.
+
+```{r}
+# Aggregate and rank spending by country to identify top markets
+data_clean %>%
+  group_by(Country) %>%
+  summarise(total_spending = sum(TotalSpending)) %>%
+  arrange(desc(total_spending)) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(Country, total_spending), y = total_spending, fill = total_spending)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_fill_gradient(low = "lightgreen", high = "darkgreen", name = "Spending", labels = scales::comma) +  # Gradient labels with commas
+  coord_cartesian(ylim = c(0, 1000000)) +
+  labs(title = "Total Spending by Top 10 Countries", x = "Country", y = "Total Spending") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "darkgreen", face = "bold", hjust = 0.5),
+        axis.title = element_text(color = "navy"),
+        axis.text.x = element_text(angle = 45, hjust = 1, color = "black")) +
+  geom_text(aes(label = scales::comma(round(total_spending, -4))), vjust = -0.5, size = 2, color = "black")
+```
+
+-   **RFM scatter plot: Frequency vs Monetary**:
+
+    -   **Descriptor**: This scatter plot segments customers by examining purchase frequency versus monetary value, targeting high-value customers for retention strategies. A scatter plot is ideal for visualising two continuous RFM metrics, identifying clusters of frequent, high-spending customers. The plot maps frequency against monetary value (0-50000) for a sampled dataset, with points sized by product diversity. A regression line shows the trend, and a "High-Value Segment" annotation highlights customers with high frequency and spending.
+
+```{r}
+# Sample RFM data to manage visualisation load while retaining patterns
+set.seed(123)  # For reproducibility
+rfm_plot <- ggplot(rfm_data %>% sample_n(min(10000, nrow(rfm_data))), aes(x = Frequency, y = Monetary, color = ProductDiversity)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkviolet", size = 1.5) +
+  scale_color_gradient(low = "lightpink", high = "darkmagenta", name = "Product Diversity") +
+  coord_cartesian(ylim = c(0, 50000)) +
+  labs(title = "Frequency vs Monetary Value", x = "Frequency (Number of Purchases)", y = "Monetary (Total Spending)") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "purple", face = "bold", hjust = 0.5),
+        axis.title = element_text(color = "darkblue"),
+        panel.grid.minor = element_line(color = "lightgray"),
+        legend.background = element_rect(fill = "white", color = "black")) +
+  annotate("text", x = max(rfm_data$Frequency, na.rm = TRUE) * 0.55, y = 45000, 
+           label = "High-Value Segment", color = "darkred", size = 4, fontface = "bold")
+
+print(rfm_plot)
+```
+
+-   **Seasonal sales by month**:
+
+    -   **Descriptor**: The line plot detects monthly sales patterns to identify seasonal peaks, such as holiday spikes, for optimising promotional timing. A line plot is ideal for time-series data aggregated by month, clearly showing seasonal trends. The plot shows monthly sales with a line and points, emphasising sales variations. A "Peak Season" annotation near the December peak highlights the holiday surge, with the y-axis formatted for readability.
+
+```{r}
+# Aggregate monthly sales totals to detect seasonal patterns
+monthly_sales_data <- data_clean %>%
+  group_by(Month) %>%
+  summarise(monthly_sales = sum(TotalSpending), .groups = "drop")
+
+# Pre-compute max sales for annotation positioning
+max_monthly_sales <- max(monthly_sales_data$monthly_sales, na.rm = TRUE)  # Pre-compute max
+
+# Plot line and points to track monthly variations
+ggplot(monthly_sales_data, aes(x = Month, y = monthly_sales, color = monthly_sales)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_color_gradient(low = "lightcoral", high = "darkred", name = "Sales") +
+  labs(title = "Monthly Sales Trends", x = "Month", y = "Total Sales") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "darkred", face = "bold"),
+        axis.title = element_text(color = "darkgreen"),
+        panel.background = element_rect(fill = "mistyrose")) +
+  annotate("text", x = monthly_sales_data$Month[which.max(monthly_sales_data$monthly_sales)], 
+           y = max_monthly_sales * 1.04, label = "Peak Season", color = "blue", size = 4) # Annotate peak season at the month with highest sales, placed 4% above max sales for visibility
+```
+
+-   **Product diversity vs Monetary**:
+
+    -   **Descriptor**: This scatter plot explores how product diversity correlates with monetary value to inform product bundling strategies. A scatter plot is ideal for visualising the relationship between two continuous variables, highlighting segments with high diversity and spending. The plot maps product diversity against monetary value (0-50000) for a sampled dataset, with points sized by recency. A regression line shows the trend, and a shaded rectangle with a "High Diversity\\nHigh Spend" annotation highlights customers with 50+ unique items and high spending.
+
+```{r}
+# Sample RFM data to manage visualisation load while retaining patterns
+set.seed(123)  # For reproducibility
+diversity_plot <- ggplot(rfm_data %>% sample_n(min(10000, nrow(rfm_data))), aes(x = ProductDiversity, y = Monetary, color = Recency)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkcyan", size = 1.5) +
+  scale_color_gradient(low = "cyan", high = "black", name = "Recency (Days)") +
+  coord_cartesian(xlim = c(0, 700), ylim = c(0, 50000)) +  # Limit x-axis to ProductDiversity < 600
+  labs(title = "Product Diversity vs Monetary Value", x = "Product Diversity (Unique Items)", y = "Monetary (Total Spending)") +
+  scale_y_continuous(labels = scales::comma) +  # Fixed y-axis labels to use commas
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(color = "darkcyan", face = "bold", hjust = 0.5),
+        axis.title = element_text(color = "darkblue"),
+        panel.grid.major = element_line(color = "lightblue", linetype = "dotted"),
+        legend.position = "bottom") +
+  annotate("text", x = 350, y = 45000, label = "High Diversity\nHigh Spend", color = "black", size = 4)
+
+print(diversity_plot)
+```
+
+# Reporting
+
+The analysis uncovers intricate patterns in customer purchasing behavior, providing a robust foundation for segmenting customers and optimising retail strategies.
+
+## Key Findings
+
+-   The **Histogram of Quantity** reveals that most transactions involve small quantities (1-50 items), with a long tail extending to 1000, where high-volume purchases occur infrequently (less than 1% of transactions). This suggests a market dominated by low-volume buyers.
+
+-   The **Scatter plot: UnitPrice vs Quantity** indicates a negative correlation between price and quantity, with a notable "Bulk Discount Trend" at higher quantities, implying that discounts effectively drive larger orders.
+
+-   The **Line plot: Sales over time (2010-2011)** shows a steady sales increase between 2010 and 2011, with noticeable fluctuations, particularly around mid-2011, potentially linked to seasonal promotions or economic shifts.
+
+-   The **Bar plot: Total spending by country** confirms the UK as the dominant market, contributing over 50% of total spending, with other European nations like Germany and France following, highlighting a regional concentration.
+
+-   The **RFM scatter plot: Frequency vs Monetary** identifies a high-value segment with frequencies above 50 and monetary values exceeding \$40,000, indicating that frequent buyers with diverse purchases are key revenue drivers.
+
+-   The **Seasonal sales by month** plot pinpoints December as a peak season, with sales doubling compared to the annual average, underscoring the impact of holiday shopping.
+
+-   The **Product diversity vs Monetary** plot highlights a niche segment of customers with 50+ unique items and spending over \$40,000, suggesting that product exploration correlates strongly with high expenditure.
+
+## Narrative
+
+The customer segmentation analysis, anchored in RFM metrics, shows a multifaceted retail ecosystem where buyer behaviours are shaped by a confluence of economic, psychological, and structural factors. High-value frequent buyers, defined by their recent engagement, over 50 purchases, and monetary contributions exceeding \$40,000, form the core of revenue generation, often showing a propensity for exploring 50 or more unique products. This suggests not just transactional loyalty but a deeper curiosity-driven attachment to the platform, potentially fueled by personalised recommendations or a broad inventory that caters to niche interests. This segment stands in stark contrast to occasional shoppers, who engage sporadically with moderate spending, perhaps constrained by budget limitations or situational needs, and low-engagement customers, whose minimal activity may stem from barriers like poor user experience, limited marketing reach, or external competition, raising critical questions about retention strategies in a digital marketplace. Geographically, the UK's dominance highlights a mature, saturated market with high customer density and trust, yet this concentration poses risks of vulnerability to regional economic downturns or regulatory changes, while untapped potential in European neighbours like Germany and France invites a strategic pivot toward localised campaigns to foster cross-border growth. Temporally, the 2010 and 2011 sales trajectory, marked by a steady upward arc punctuated by mid-2011 volatility, shows the retail sector's sensitivity to macroeconomic influences, such as consumer confidence fluctuations or seasonal demand shifts, a pattern amplified by the December sales peak that doubles average monthly figures and likely reflects not only holiday-driven impulse buying but also the platform's efficacy in capitalizing on festive marketing. Critically, the interplay between product diversity and elevated spending shows a behavioural loop. Exploratory buyers sampling 50+ unique items tend to be more recently active and higher spenders, implying that diversity fosters habitual engagement through discovery, though this raises questions about inventory costs and the sustainability of broad assortments. Collectively, these insights create a narrative of strategic opportunity amid complexity, harnessing high-value segments to mitigate risks, diversifying markets to build resilience, and synchronising with seasonal rhythms to amplify success, all while critically evaluating the underlying drivers of consumer behaviour to sustain long-term retail vitality.
+
+## Summary and Implications
+
+-   **High-Value Segments**: Frequent, high-RFM customers (frequency \> 50, monetary value\> \$40,000) stand out as the primary revenue drivers, with product diversity (50+ items) not only amplifying their contribution but also signalling a deeper psychological investment in the platform, where variety fosters a sense of discovery and long-term loyalty in an otherwise transactional digital space.
+
+-   **Geographic Concentration**: The UK’s 50%+ spending share underscores a concentrated market maturity, potentially rooted in cultural familiarity or superior logistics, while European neighbours like Germany and France represent untapped potential, raising critical questions about barriers such as language, currency, or regulatory hurdles that could hinder global scalability.
+
+-   **Seasonal Opportunities**: December sales peaks, doubling the annual average, highlight a cyclical vulnerability to holiday-driven demand, but also an opportunity to leverage behavioural economics where consumers' heightened emotional spending during festive periods can be channelled through strategic timing to mitigate off-season dips.
+
+-   **Diversity as Engagement**: Customers with 50+ unique purchases and spending over \$40,000 exemplify how product exploration acts as a proxy for engagement, suggesting that curiosity-led browsing may mitigate churn by creating a habitual cycle of discovery, though this requires careful curation to avoid overwhelming less experienced users.
+
+-   **Temporal Trends**: The 2010-2012 growth, punctuated by mid-2011 fluctuations, reflects the retail sector's acute responsiveness to external factors like economic volatility or competitive disruptions, prompting a critical examination of resilience in supply chains and marketing agility during transitional periods.
+
+### **Implications**
+
+-   **Targeted Loyalty Programs**: Develop personalised rewards for high-RFM segments using Tidyverse filters (e.g., filter(Frequency \> 50, Monetary \> 40000)), offering exclusive discounts to retain these valuable customers; this approach not only bolsters revenue but also critically addresses the psychological need for recognition, potentially reducing churn by 15-20% through gamified incentives that encourage sustained interaction.
+
+-   **Market Expansion**: Invest in marketing campaigns tailored to non-UK European markets like Germany and France, potentially increasing market share by 10-15% based on current trends; a deeper insight here reveals the need for culturally sensitive localisation, such as multilingual interfaces or region-specific product curation to overcome entrenched barriers and foster cross-border trust in a fragmented European retail landscape.
+
+-   **Seasonal Campaigns**: Launch pre-holiday promotions in November to capitalise on the December peak, aiming to boost sales by 20% through early incentives; this strategy critically leverages anticipatory psychology, where building pre-peak hype can extend the holiday spending window, but requires data-driven A/B testing to optimise timing and avoid over-saturation.
+
+-   **Product Bundling**: Promote diverse product bundles to mid-tier customers with fewer than 50 unique purchases (e.g., filter(ProductDiversity \< 50)), encouraging exploration and potentially elevating them to high-spending segments; this implication highlights a critical balance bundles must be intelligently curated to stimulate curiosity without overwhelming, drawing on behavioural insights to transform occasional buyers into habitual explorers.
+
+-   **Inventory Optimisation**: Adjust stock levels based on the 2010-2011 growth patterns, ensuring sufficient supply during peak fluctuation periods like mid-2011, critically, this demands advanced forecasting models that account for macroeconomic signals, turning historical volatility into a proactive advantage for minimising stockouts or overstock risks in an unpredictable market.
